@@ -1,5 +1,5 @@
-const CACHE_NAME = 'eosphorus-labyrinth-trial-v6';
-const FILES = ['./','./index.html','./style.css?v=6','./app.js?v=6','./vault.js?v=6','./manifest.webmanifest','./icon.svg','./icon.png','./icon-512.png'];
+const CACHE_NAME = 'eosphorus-labyrinth-trial-v7';
+const FILES = ['./','./index.html','./style.css?v=7','./app.js?v=7','./vault.js?v=7','./knowledge_index.js?v=7','./manifest.webmanifest','./icon.svg','./icon.png','./icon-512.png'];
 self.addEventListener('install', event=>{
   event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting()));
 });

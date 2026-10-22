@@ -1,4 +1,5 @@
-import {LocalVault, normalizeUsername} from './vault.js?v=6';
+import {LocalVault, normalizeUsername} from './vault.js?v=7';
+import {KnowledgeIndex, sanitizedFeedback} from './knowledge_index.js?v=7';
 
 const vault = new LocalVault();
 const root = document.getElementById('app');
@@ -6,7 +7,8 @@ const e = text => String(text ?? '').replace(/[&<>"']/g, ch=>({'&':'&amp;','<':'
 const uuid = () => crypto.randomUUID().toLowerCase();
 const state = {view:'welcome', tab:'library', authCreate:false, search:'', selected:null,
   draftTitle:'',draftMarkdown:'',draftColor:'#ae63ef',dirty:false,reading:false,graph:null,
-  source:null,target:null, notice:'',busy:false, awayAt:null,editorSeq:0,graphPage:0};
+  source:null,target:null, notice:'',busy:false, awayAt:null,editorSeq:0,graphPage:0,
+  collection:'All notes',showConnections:false,researchAllowed:false};
 let autosaveTimer=null;
 let pendingSave=Promise.resolve();
 let noticeTimer;
@@ -52,16 +54,18 @@ function setEditor(note=null){
   state.draftMarkdown=note?.markdown??'';
   state.draftColor=note?.color??'#a966f7';
   clearTimeout(autosaveTimer);
-  state.dirty=false;state.reading=false;state.tab='editor';render();
+  state.dirty=false;state.reading=false;state.showConnections=false;state.tab='editor';render();
 }
 function listNotes(){return vault.notes.filter(n=>!n.trashed).sort((a,b)=>b.updated-a.updated);}
 function noteBy(id){return vault.notes.find(n=>n.id===id&&!n.trashed);}
 function preview(text){return String(text||'').replace(/<!-- EOSPHORUS-GRAPH-COLOR:[^>]*-->/g,'').replace(/[#*`\[\]]/g,'').trim().slice(0,140);}
 function library(){
-  const notes=listNotes().filter(n=>`${n.title} ${n.markdown}`.toLowerCase().includes(state.search.toLowerCase()));
+  const index=new KnowledgeIndex(listNotes()),notes=index.search(state.search,state.collection);
   return `<div class="page-scroller"><div class="section-head"><div><div class="eyebrow">Your private universe</div><h1>My Library</h1></div>
   <button class="btn primary tiny" data-act="new">＋ New note</button></div>
-  <input id="search" type="search" class="field search" placeholder="Search your notes…" value="${e(state.search)}" autocomplete="off" aria-label="Search notes">
+  <input id="search" type="search" class="field search" placeholder="Search notes · tag:ai · title:research" value="${e(state.search)}" autocomplete="off" aria-label="Search notes">
+  <select class="field" id="collection" aria-label="Smart Collections">${['All notes','Linked notes','Orphan notes','Books & Research',...index.tagNames().map(t=>'tag:'+t)].map(name=>'<option value="'+e(name)+'" '+(state.collection===name?'selected':'')+'>'+e(name)+'</option>').join('')}</select>
+  <div class="eyebrow">${notes.length} of ${index.notes.length} notes · indexed locally</div>
   <div id="note-list" class="note-list">${noteCards(notes)}</div>
   <div class="install-tip subtle">Your notes stay in your own encrypted vault. Nothing is uploaded or shared with another account.</div></div>`;
 }
@@ -71,10 +75,17 @@ function noteCards(notes){
     <span class="dot" style="background:${n.color};color:${n.color}"></span><span class="content"><strong>${e(n.title)}</strong>
     <p>${e(preview(n.markdown)||'Blank Markdown note')}</p><small>${new Date(n.updated).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ENCRYPTED</small></span><span aria-hidden="true">›</span></button>`).join('');
 }
+function connectionPanel(){
+  if(!state.showConnections||!state.selected)return '';
+  const index=new KnowledgeIndex(listNotes());
+  const buttons=items=>items.length?items.map(n=>'<button class="btn tiny" data-act="open" data-id="'+e(n.id)+'">'+e(n.title)+'</button>').join(''):'<small>No connections</small>';
+  return '<section class="glass stack" aria-label="Note connections"><strong>Backlinks</strong>'+buttons(index.incoming(state.selected))+'<strong>Outgoing links</strong>'+buttons(index.outgoing(state.selected))+'</section>';
+}
 function editor(){
   const shown=state.draftTitle.trim()||'Untitled note';
   return `<div class="editorbar"><div class="title-wrap"><div class="eyebrow">Private document</div><h1>${e(shown)}</h1><small>MARKDOWN  /  ${vault.demo?'TEMPORARY DEMO':e(vault.username)}</small></div>
-    <button class="btn tiny keyboard-done" type="button" data-act="keyboard-done" aria-label="Close keyboard">Done</button><button class="btn tiny" data-act="history">History</button><button class="btn primary tiny" data-act="save">Save</button></div>
+    <button class="btn tiny keyboard-done" type="button" data-act="keyboard-done" aria-label="Close keyboard">Done</button><button class="btn tiny" data-act="history">History</button><button class="btn tiny" data-act="connections">Connections</button><button class="btn primary tiny" data-act="save">Save</button></div>
+    ${connectionPanel()}
     <div class="modebar"><span>${state.reading?'READING MODE':'WRITE YOUR STORY'}</span>
       <button class="btn tiny" data-act="toggle-read">${state.reading?'✎ Edit':'◉ Read'}</button></div>
     ${state.reading?'':`<div class="toolbar" aria-label="Formatting tools">
@@ -145,7 +156,14 @@ function settings(){
     <p class="warning">Important: Clearing Safari website data or deleting the web app may erase local notes. Back up anything valuable. An account on one device will not automatically appear on another.</p>
     </div><div class="glass stack" style="margin-top:16px"><div class="eyebrow">Safari install</div><h3>Add to Home Screen</h3>
     <p class="subtle">Safari → Share → Add to Home Screen → Open as Web App → Add. Open online once before using offline.</p>
-    <p class="subtle">The native Android and iOS apps are separate builds. This preview does not import or modify Android vaults, books or media.</p></div></div>`;
+    <p class="subtle">The native Android and iOS apps are separate builds. This preview does not import or modify Android vaults, books or media.</p></div>
+    <div class="glass stack" style="margin-top:16px"><div class="eyebrow">Permissioned local research</div>
+    <button class="btn" data-act="research-permission">${state.researchAllowed?'Revoke research access':'Allow local source search until vault locks'}</button>
+    <button class="btn" data-act="research-search" ${!state.researchAllowed?'disabled':''}>Find notes about a topic</button>
+    <p class="subtle">Local note titles only. No model calls, training or uploads.</p></div>
+    <div class="glass stack" style="margin-top:16px"><div class="eyebrow">Private tester tools</div>
+    <button class="btn" data-act="beta-report">Export anonymous tester report</button>
+    <p class="subtle">Manual local download. No note contents, passwords, account identifiers or screenshots.</p></div></div>`;
 }
 function trash(){
   const notes=vault.notes.filter(n=>n.trashed);
@@ -254,7 +272,7 @@ async function perform(action,el){
     case 'create':state.authCreate=true;auth();break;
     case 'switch-auth':state.authCreate=!state.authCreate;auth();break;
     case 'demo':vault.demoLogin();state.tab='library';state.search='';render();break;
-    case 'lock':if(state.dirty)await saveDraft(true);clearTimeout(autosaveTimer);vault.lock();clearSensitiveDraft();welcome();break;
+    case 'lock':if(state.dirty)await saveDraft(true);clearTimeout(autosaveTimer);state.researchAllowed=false;state.collection='All notes';vault.lock();clearSensitiveDraft();welcome();break;
     case 'new':if(state.dirty)await saveDraft(true);setEditor();break;
     case 'open':{if(state.dirty)await saveDraft(true);const note=noteBy(el.dataset.id);if(note)setEditor(note);break;}
     case 'missing-link':toast('Create this linked note in Library first.');break;
@@ -264,6 +282,23 @@ async function perform(action,el){
       state.reading=!state.reading;render();break;
     }
     case 'save':await saveDraft();render();break;
+    case 'research-permission':state.researchAllowed=!state.researchAllowed;render();toast(state.researchAllowed?'Local note search authorized for this session':'Research access revoked');break;
+    case 'research-search':{
+      if(!state.researchAllowed||!vault.unlocked)throw new Error('Enable research access in Settings first.');
+      const query=prompt('Search private note titles or keywords:');
+      if(!query)break;
+      const notes=new KnowledgeIndex(listNotes()).search(query).slice(0,10);
+      if(!notes.length){toast('No matching local notes.');break;}
+      alert('Matching titles in this vault:\n'+notes.map(n=>'• '+n.title).join('\n'));
+      break;
+    }
+    case 'beta-report':{
+      const bytes=JSON.stringify(sanitizedFeedback(),null,2),blob=new Blob([bytes],{type:'application/json'});
+      const url=URL.createObjectURL(blob),link=document.createElement('a');
+      link.href=url;link.download='Eosphorus-Labyrinth-anonymous-beta.json';link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),3000);toast('Sanitized report downloaded locally');break;
+    }
+    case 'connections':if(state.dirty)await saveDraft(true);state.showConnections=!state.showConnections;render();break;
     case 'history':{
       if(state.dirty)await saveDraft(true);
       const current=noteBy(state.selected);const revisions=(current?.revisions||[]).slice().reverse();
@@ -491,7 +526,7 @@ root.addEventListener('input',event=>{
   const target=event.target;
   if(target.id==='search'){
     state.search=target.value;
-    document.getElementById('note-list').innerHTML=noteCards(listNotes().filter(n=>`${n.title} ${n.markdown}`.toLowerCase().includes(state.search.toLowerCase())));
+    document.getElementById('note-list').innerHTML=noteCards(new KnowledgeIndex(listNotes()).search(state.search,state.collection));
   }
   if(target.id==='note-title'){state.draftTitle=target.value;state.dirty=true;state.editorSeq++;scheduleEncryptedAutosave();}
   if(target.id==='note-text'){state.draftMarkdown=target.value;state.dirty=true;state.editorSeq++;sizeTextArea(target);scheduleEncryptedAutosave();}
@@ -499,6 +534,7 @@ root.addEventListener('input',event=>{
 });
 root.addEventListener('change',async event=>{
   const target=event.target;
+  if(target.id==='collection'){state.collection=target.value;render();}
   if(target.id==='backup-file'){
     const file=target.files?.[0];if(!file)return;
     try{await vault.restoreBackup(file);toast('Encrypted account backup restored locally. Sign in using its original username and password.');}
@@ -546,7 +582,7 @@ window.addEventListener('resize',syncEditorKeyboardSpace,{passive:true});
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){if(vault.unlocked){if(state.dirty)saveDraft(true).catch(()=>{});state.awayAt=Date.now();root.classList.add('hidden');}}
   else if(state.awayAt!==null){
-    if(Date.now()-state.awayAt>=300000){vault.lock();clearSensitiveDraft();welcome();toast('Session expired. Unlock your private vault.');}
+    if(Date.now()-state.awayAt>=300000){state.researchAllowed=false;state.collection='All notes';vault.lock();clearSensitiveDraft();welcome();toast('Session expired. Unlock your private vault.');}
     else if(vault.unlocked){render();}
     state.awayAt=null;root.classList.remove('hidden');
   }
