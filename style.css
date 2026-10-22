@@ -44,3 +44,6 @@
 /* Explicit keyboard dismissal restores the full navigation without discarding edits. */
 .workspace .keyboard-done{display:none}
 .workspace.keyboard-editing .keyboard-done{display:inline-flex}
+
+/* Version 6: graph gestures do not scroll the page while linking dots. */
+#graph-canvas{touch-action:none;cursor:crosshair;display:block;width:100%}

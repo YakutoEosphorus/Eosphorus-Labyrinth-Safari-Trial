@@ -1,4 +1,4 @@
-import {LocalVault, normalizeUsername} from './vault.js';
+import {LocalVault, normalizeUsername} from './vault.js?v=6';
 
 const vault = new LocalVault();
 const root = document.getElementById('app');
@@ -6,7 +6,9 @@ const e = text => String(text ?? '').replace(/[&<>"']/g, ch=>({'&':'&amp;','<':'
 const uuid = () => crypto.randomUUID().toLowerCase();
 const state = {view:'welcome', tab:'library', authCreate:false, search:'', selected:null,
   draftTitle:'',draftMarkdown:'',draftColor:'#ae63ef',dirty:false,reading:false,graph:null,
-  source:null,target:null, notice:'',busy:false, awayAt:null};
+  source:null,target:null, notice:'',busy:false, awayAt:null,editorSeq:0,graphPage:0};
+let autosaveTimer=null;
+let pendingSave=Promise.resolve();
 let noticeTimer;
 
 function toast(message) {
@@ -49,6 +51,7 @@ function setEditor(note=null){
   state.draftTitle=note?.title??'';
   state.draftMarkdown=note?.markdown??'';
   state.draftColor=note?.color??'#a966f7';
+  clearTimeout(autosaveTimer);
   state.dirty=false;state.reading=false;state.tab='editor';render();
 }
 function listNotes(){return vault.notes.filter(n=>!n.trashed).sort((a,b)=>b.updated-a.updated);}
@@ -71,7 +74,7 @@ function noteCards(notes){
 function editor(){
   const shown=state.draftTitle.trim()||'Untitled note';
   return `<div class="editorbar"><div class="title-wrap"><div class="eyebrow">Private document</div><h1>${e(shown)}</h1><small>MARKDOWN  /  ${vault.demo?'TEMPORARY DEMO':e(vault.username)}</small></div>
-    <button class="btn tiny keyboard-done" type="button" data-act="keyboard-done" aria-label="Close keyboard">Done</button><button class="btn primary tiny" data-act="save">Save</button></div>
+    <button class="btn tiny keyboard-done" type="button" data-act="keyboard-done" aria-label="Close keyboard">Done</button><button class="btn tiny" data-act="history">History</button><button class="btn primary tiny" data-act="save">Save</button></div>
     <div class="modebar"><span>${state.reading?'READING MODE':'WRITE YOUR STORY'}</span>
       <button class="btn tiny" data-act="toggle-read">${state.reading?'✎ Edit':'◉ Read'}</button></div>
     ${state.reading?'':`<div class="toolbar" aria-label="Formatting tools">
@@ -124,9 +127,9 @@ function renderMarkdown(markdown){
 function graphPage(){
   const count=listNotes().length;
   return `<div class="page-scroller"><div class="section-head"><div><div class="eyebrow">Connect the dots</div><h1>Knowledge Graph</h1></div><span class="pill">${count} notes</span></div>
-  <p class="subtle">Drag to rotate in 3D. Pinch to zoom. Tap any node to open its note.</p>
+  <p class="subtle">Drag from one dot to another to connect encrypted notes. Drag empty space to rotate, pinch to zoom, tap a dot to open.</p>
   <div class="canvas-holder"><canvas id="graph-canvas" aria-label="Interactive 3D graph of notes"></canvas></div>
-  <div class="graph-controls"><button class="btn tiny" data-act="graph-in">＋ Zoom</button><button class="btn tiny" data-act="graph-reset">↺ Reset</button><button class="btn tiny" data-act="graph-out">− Zoom</button></div>
+  <div class="graph-controls"><button class="btn tiny" data-act="graph-in">＋ Zoom</button><button class="btn tiny" data-act="graph-reset">↺ Reset</button><button class="btn tiny" data-act="graph-out">− Zoom</button><button class="btn tiny" data-act="graph-prev">← Previous</button><button class="btn tiny" data-act="graph-next">Next →</button></div>
   <div class="glass stack"><div class="eyebrow">Custom note colors</div><p class="subtle">Choose a note and any color. Changes stay with that encrypted note.</p>
   <select class="field" id="color-note"><option value="">Select a note</option>${listNotes().map(n=>`<option value="${n.id}" ${state.target===n.id?'selected':''}>${e(n.title)}</option>`).join('')}</select>
   <div class="color-control"><input type="color" id="dot-color" value="${state.draftColor}"><span id="color-hex">${state.draftColor.toUpperCase()}</span><button class="btn tiny" data-act="save-color">Save color</button></div>
@@ -171,18 +174,77 @@ function clearSensitiveDraft(){
   state.selected=null;state.draftTitle='';state.draftMarkdown='';state.draftColor='#ae63ef';
   state.dirty=false;state.reading=false;state.search='';state.source=null;state.target=null;
 }
-async function saveDraft(){
-  const title=state.draftTitle.trim();
-  if(!title||title.length>150||/[\u0000-\u001f/\\]/.test(title)) throw new Error('Enter a valid note title (1–150 characters).');
-  if(vault.notes.some(n=>!n.trashed&&n.id!==state.selected&&n.title.toLowerCase()===title.toLowerCase()))
-    throw new Error('A note with that title already exists.');
-  const now=Date.now();
-  const id=state.selected || uuid();
-  const existing=vault.notes.find(n=>n.id===id);
-  const note={id,title,markdown:state.draftMarkdown,color:existing?.color||state.draftColor,updated:now,trashed:false};
-  const copy=vault.notes.filter(n=>n.id!==id);copy.push(note);
-  await vault.saveNotes(copy);
-  state.selected=id;state.dirty=false;toast(vault.demo?'Demo note updated':'Encrypted note saved');
+function scheduleEncryptedAutosave(){
+  clearTimeout(autosaveTimer);
+  autosaveTimer=setTimeout(async ()=>{
+    if(!state.dirty||!vault.unlocked)return;
+    try{await saveDraft(true);}
+    catch(error){toast('Encrypted autosave failed: '+(error.message||'Check device storage'));}
+  },1100);
+}
+function addRevision(oldNote,newNote){
+  if(!oldNote)return newNote;
+  if(oldNote.title===newNote.title&&oldNote.markdown===newNote.markdown&&oldNote.color===newNote.color)return oldNote;
+  const versions=(oldNote.revisions||[]).slice(-11);
+  versions.push({title:oldNote.title,markdown:oldNote.markdown,color:oldNote.color,updated:oldNote.updated});
+  return {...newNote,revisions:versions};
+}
+async function saveDraft(quiet=false){
+  clearTimeout(autosaveTimer);
+  const snapshot={seq:state.editorSeq,id:state.selected,title:state.draftTitle.trim(),markdown:state.draftMarkdown,color:state.draftColor};
+  if(!snapshot.title){
+    if(!snapshot.markdown.trim()&&!snapshot.id){state.dirty=false;return;}
+    snapshot.title='Untitled '+new Date().toLocaleString();
+  }
+  if(snapshot.title.length>150||/[\u0000-\u001f/\\]/.test(snapshot.title))
+    throw new Error('Use a valid title (up to 150 characters).');
+  const work=async()=>{
+    let title=snapshot.title;
+    const others=new Set(vault.notes.filter(n=>!n.trashed&&n.id!==snapshot.id).map(n=>n.title.toLowerCase()));
+    if(others.has(title.toLowerCase())){
+      let suffix=2;
+      while(others.has((title.slice(0,140)+' ('+suffix+')').toLowerCase()))suffix++;
+      title=title.slice(0,140)+' ('+suffix+')';
+    }
+    const id=snapshot.id||uuid(),existing=vault.notes.find(n=>n.id===id);
+    const note=addRevision(existing,{...existing,id,title,markdown:snapshot.markdown,
+      color:existing?.color||snapshot.color,updated:Date.now(),trashed:false});
+    const next=vault.notes.filter(n=>n.id!==id);next.push(note);
+    await vault.saveNotes(next);
+    // Retain the same note ID even if typing continued during encryption.
+    // Otherwise a second autosave could accidentally create a duplicate.
+    if(state.selected===snapshot.id){
+      state.selected=id;
+      if(state.editorSeq===snapshot.seq){
+        state.dirty=false;state.draftTitle=title;
+      }else if(state.dirty){
+        scheduleEncryptedAutosave();
+      }
+    }
+    if(!quiet)toast(vault.demo?'Demo note saved':'Encrypted note saved');
+  };
+  const result=pendingSave.then(work);
+  pendingSave=result.catch(()=>{});
+  return result;
+}
+function graphLink(markdown,title){
+  if(!title||/[\[\]|#\r\n/\\]/.test(title))throw new Error('Rename this note before linking it.');
+  const normalize=s=>s.trim().replaceAll('\\','/').split('/').pop().replace(/\.md$/i,'').toLowerCase();
+  const links=Array.from(markdown.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g),m=>normalize(m[1]));
+  if(links.includes(title.toLowerCase()))return {markdown,changed:false};
+  const pad=markdown.endsWith('\n\n')||!markdown?'':markdown.endsWith('\n')?'\n':'\n\n';
+  return {markdown:markdown+pad+'[['+title+']]\n',changed:true};
+}
+async function connectGraphNodes(fromId,toId){
+  if(!vault.unlocked)throw new Error('Unlock a private account first.');
+  const a=vault.notes.find(n=>n.id===fromId&&!n.trashed);
+  const b=vault.notes.find(n=>n.id===toId&&!n.trashed);
+  if(!a||!b||a.id===b.id)throw new Error('Choose two different notes.');
+  const link=graphLink(a.markdown,b.title);
+  if(!link.changed)return false;
+  const updated=addRevision(a,{...a,markdown:link.markdown,updated:Date.now()});
+  await vault.saveNotes(vault.notes.map(n=>n.id===a.id?updated:n));
+  return true;
 }
 async function perform(action,el){
   if(state.busy)return;
@@ -192,16 +254,29 @@ async function perform(action,el){
     case 'create':state.authCreate=true;auth();break;
     case 'switch-auth':state.authCreate=!state.authCreate;auth();break;
     case 'demo':vault.demoLogin();state.tab='library';state.search='';render();break;
-    case 'lock':vault.lock();clearSensitiveDraft();welcome();break;
-    case 'new':setEditor();break;
-    case 'open':{const note=noteBy(el.dataset.id);if(note)setEditor(note);break;}
+    case 'lock':if(state.dirty)await saveDraft(true);clearTimeout(autosaveTimer);vault.lock();clearSensitiveDraft();welcome();break;
+    case 'new':if(state.dirty)await saveDraft(true);setEditor();break;
+    case 'open':{if(state.dirty)await saveDraft(true);const note=noteBy(el.dataset.id);if(note)setEditor(note);break;}
     case 'missing-link':toast('Create this linked note in Library first.');break;
-    case 'tab':state.tab=el.dataset.tab;render();break;
+    case 'tab':if(state.dirty)await saveDraft(true);state.tab=el.dataset.tab;render();break;
     case 'toggle-read':{
       if(!state.reading&&state.dirty){await saveDraft();}
       state.reading=!state.reading;render();break;
     }
     case 'save':await saveDraft();render();break;
+    case 'history':{
+      if(state.dirty)await saveDraft(true);
+      const current=noteBy(state.selected);const revisions=(current?.revisions||[]).slice().reverse();
+      if(!revisions.length){toast('No older versions saved yet.');break;}
+      const answer=prompt('Restore an encrypted revision? Enter 1–'+revisions.length+' (most recent first).\n'+revisions.map((r,i)=>(i+1)+'. '+new Date(r.updated).toLocaleString()+' — '+r.title).join('\n'));
+      if(answer===null)break;
+      const index=Number(answer)-1;
+      if(!Number.isInteger(index)||index<0||index>=revisions.length)throw new Error('Select a valid revision number.');
+      if(!confirm('Restore this version? The current note remains in encrypted history.'))break;
+      const prior=revisions[index];
+      const restored=addRevision(current,{...current,title:prior.title,markdown:prior.markdown,color:prior.color,updated:Date.now()});
+      await vault.saveNotes(vault.notes.map(n=>n.id===current.id?restored:n));setEditor(restored);toast('Encrypted version restored');break;
+    }
     case 'keyboard-done':document.activeElement?.blur();syncEditorKeyboardSpace();break;
     case 'fmt':formatText(el.dataset.fmt);break;
     case 'jump-top':document.getElementById('doc-scroll')?.scrollTo({top:0,behavior:'smooth'});break;
@@ -222,6 +297,8 @@ async function perform(action,el){
       const link=document.createElement('a');link.href=url;link.download='Eosphorus-Labyrinth-encrypted-backup.json';link.click();
       setTimeout(()=>URL.revokeObjectURL(url),3000);toast('Encrypted backup downloaded');break;
     }
+    case 'graph-prev':state.graphPage=Math.max(0,state.graphPage-1);render();break;
+    case 'graph-next':state.graphPage=Math.min(Math.max(0,Math.ceil(listNotes().length/60)-1),state.graphPage+1);render();break;
     case 'graph-in':state.graph.zoom=Math.min(2.6,state.graph.zoom*1.2);drawGraph();break;
     case 'graph-out':state.graph.zoom=Math.max(.48,state.graph.zoom/1.2);drawGraph();break;
     case 'graph-reset':state.graph.a=.33;state.graph.b=-.18;state.graph.zoom=1;drawGraph();break;
@@ -248,12 +325,12 @@ function formatText(format){
   const start=area.selectionStart,end=area.selectionEnd,selection=area.value.slice(start,end);
   const formats={h1:`# ${selection||'Heading'}`,h2:`## ${selection||'Subheading'}`,bold:`**${selection||'bold'}**`,italic:`*${selection||'italic'}*`,list:`- ${selection||'List item'}`,task:`- [ ] ${selection||'Task'}`,link:`[[${selection||'Note Name'}]]`,code:'`'+(selection||'code')+'`'};
   const added=formats[format];if(!added)return;
-  area.setRangeText(added,start,end,'end');state.draftMarkdown=area.value;state.dirty=true;sizeTextArea(area);area.focus();
+  area.setRangeText(added,start,end,'end');state.draftMarkdown=area.value;state.dirty=true;state.editorSeq++;scheduleEncryptedAutosave();sizeTextArea(area);area.focus();
 }
 
 // Deterministic XYZ graph with camera perspective, touch rotation, pinch and node selection.
 function graphPoints(){
-  const notes=listNotes().slice(0,90),n=Math.max(notes.length,1);
+  const notes=listNotes().slice(state.graphPage*60,(state.graphPage+1)*60),n=Math.max(notes.length,1);
   const map=new Map(notes.map((note,i)=>{
     const y=1-(i+.5)*2/n,angle=i*2.399963229728653;
     const radius=Math.sqrt(Math.max(0,1-y*y));
@@ -271,34 +348,81 @@ function setupGraph(){
   const canvas=document.getElementById('graph-canvas');if(!canvas)return;
   const model={canvas,...graphPoints(),a:.33,b:-.18,zoom:1,pointers:new Map(),pressed:null,hadMulti:false,
     screenNodes:[]};state.graph=model;
+  const coords=event=>{
+    const box=canvas.getBoundingClientRect();
+    return {x:event.clientX-box.left,y:event.clientY-box.top};
+  };
+  const hit=(x,y,distance=27)=>model.screenNodes.filter(p=>
+    Math.hypot(x-p.x,y-p.y)<Math.max(p.r+11,distance)).sort((a,b)=>b.depth-a.depth)[0];
   canvas.addEventListener('pointerdown',event=>{
-    event.preventDefault();canvas.setPointerCapture(event.pointerId);
-    const rect=canvas.getBoundingClientRect(),x=event.clientX-rect.left,y=event.clientY-rect.top;
-    model.pointers.set(event.pointerId,{x,y});model.pressed={x,y};
-    if(model.pointers.size>1)model.hadMulti=true;
+    event.preventDefault();
+    canvas.setPointerCapture(event.pointerId);
+    const point=coords(event);
+    model.pointers.set(event.pointerId,point);
+    model.pressed={...point,node:hit(point.x,point.y),moved:false,connecting:false};
+    if(model.pointers.size>1){model.hadMulti=true;model.pressed.node=null;}
   });
   canvas.addEventListener('pointermove',event=>{
     const old=model.pointers.get(event.pointerId);if(!old)return;
-    event.preventDefault();const rect=canvas.getBoundingClientRect();
-    const point={x:event.clientX-rect.left,y:event.clientY-rect.top};
-    if(model.pointers.size===1){model.a+=(point.x-old.x)*.009;model.b=Math.max(-1.2,Math.min(1.2,model.b+(point.y-old.y)*.009));}
-    else if(model.pointers.size===2){
+    event.preventDefault();
+    const point=coords(event);
+    if(model.pointers.size===1){
+      if(model.pressed?.node){
+        if(Math.hypot(point.x-model.pressed.x,point.y-model.pressed.y)>12)
+          model.pressed.connecting=true;
+        if(model.pressed.connecting){
+          model.linkCursor=point;
+          model.linkHover=hit(point.x,point.y,37);
+          if(model.linkHover?.note.id===model.pressed.node.note.id)model.linkHover=null;
+        }
+      }else{
+        model.a+=(point.x-old.x)*.009;
+        model.b=Math.max(-1.2,Math.min(1.2,model.b+(point.y-old.y)*.009));
+        if(Math.hypot(point.x-model.pressed.x,point.y-model.pressed.y)>10)
+          model.pressed.moved=true;
+      }
+    }else if(model.pointers.size===2){
       const others=Array.from(model.pointers.entries()).filter(([id])=>id!==event.pointerId);
-      if(others.length){const other=others[0][1];
-        const was=Math.hypot(old.x-other.x,old.y-other.y)||1,now=Math.hypot(point.x-other.x,point.y-other.y);
-        model.zoom=Math.max(.48,Math.min(2.6,model.zoom*(now/was)));}
+      if(others.length){
+        const other=others[0][1];
+        const was=Math.hypot(old.x-other.x,old.y-other.y)||1;
+        const now=Math.hypot(point.x-other.x,point.y-other.y);
+        model.zoom=Math.max(.48,Math.min(2.6,model.zoom*(now/was)));
+      }
     }
-    model.pointers.set(event.pointerId,point);drawGraph();
+    model.pointers.set(event.pointerId,point);
+    drawGraph();
   });
-  canvas.addEventListener('pointerup',event=>{
-    const rect=canvas.getBoundingClientRect();const x=event.clientX-rect.left,y=event.clientY-rect.top;
-    if(!model.hadMulti&&model.pressed&&Math.hypot(x-model.pressed.x,y-model.pressed.y)<11){
-      const found=model.screenNodes.filter(p=>Math.hypot(x-p.x,y-p.y)<Math.max(p.r+9,18)).sort((a,b)=>b.depth-a.depth)[0];
-      if(found)setEditor(found.note);
+  canvas.addEventListener('pointerup',async event=>{
+    const point=coords(event);
+    const pressed=model.pressed;
+    const validSingle=!model.hadMulti&&model.pointers.size===1;
+    const source=pressed?.node?.note;
+    const target=pressed?.connecting?hit(point.x,point.y,37)?.note:null;
+    model.linkCursor=null;model.linkHover=null;
+    model.pointers.delete(event.pointerId);
+    if(!model.pointers.size){model.pressed=null;model.hadMulti=false;}
+    drawGraph();
+    if(validSingle&&pressed?.connecting&&source&&target&&source.id!==target.id){
+      if(!confirm('Connect '+source.title+' → '+target.title+'? This adds an encrypted [[Wikilink]] to the source note.'))return;
+      try{
+        const changed=await connectGraphNodes(source.id,target.id);
+        if(!changed){toast('These notes already have a link.');return;}
+        if(state.graph===model){
+          const fresh=graphPoints();model.points=fresh.points;model.edges=fresh.edges;drawGraph();
+        }
+        toast('Notes connected in your encrypted vault');
+      }catch(error){toast(error.message||'Could not save the connection.');}
+    }else if(validSingle&&pressed?.node&&!pressed.connecting&&!pressed.moved){
+      setEditor(pressed.node.note);
     }
-    model.pointers.delete(event.pointerId);if(!model.pointers.size){model.pressed=null;model.hadMulti=false;}
   });
-  canvas.addEventListener('pointercancel',event=>{model.pointers.delete(event.pointerId);model.pressed=null;model.hadMulti=false;});
+  canvas.addEventListener('pointercancel',event=>{
+    model.pointers.delete(event.pointerId);
+    model.pressed=null;model.hadMulti=false;
+    model.linkCursor=null;model.linkHover=null;
+    drawGraph();
+  });
   const resize=new ResizeObserver(()=>{if(state.graph===model)drawGraph();});resize.observe(canvas);
   model.resize=resize;drawGraph();
 }
@@ -309,6 +433,10 @@ function drawGraph(){
   const pixelRatio=Math.min(window.devicePixelRatio||1,2);
   canvas.width=Math.floor(w*pixelRatio);canvas.height=Math.floor(h*pixelRatio);
   const context=canvas.getContext('2d');context.setTransform(pixelRatio,0,0,pixelRatio,0,0);
+  context.fillStyle='#0b0816';context.fillRect(0,0,w,h);
+  context.save();context.translate(w/2,h/2);context.scale(1,.58);
+  for(const k of [1,2,3]){context.beginPath();context.ellipse(0,0,Math.min(w,h)*.15*k,Math.min(w,h)*.15*k,0,0,Math.PI*2);context.strokeStyle='#aa61e528';context.lineWidth=1.5;context.stroke();}
+  context.restore();
   const transform=p=>{
     const cos=Math.cos(m.a),sin=Math.sin(m.a),cb=Math.cos(m.b),sb=Math.sin(m.b);
     const x=p.x*cos-p.z*sin,z=p.x*sin+p.z*cos,y=p.y*cb-z*sb,depth=p.y*sb+z*cb;
@@ -318,8 +446,28 @@ function drawGraph(){
   const coords=new Map(m.points.map(p=>[p,transform(p)]));
   for(const [p,q] of m.edges){const a=coords.get(p),b=coords.get(q);context.beginPath();context.moveTo(a.x,a.y);context.lineTo(b.x,b.y);context.strokeStyle='#a676db65';context.lineWidth=1.4;context.stroke();}
   m.screenNodes=Array.from(coords.values()).sort((a,b)=>a.depth-b.depth);
-  for(const p of m.screenNodes){context.beginPath();context.arc(p.x,p.y,p.r*2.3,0,2*Math.PI);context.fillStyle=p.note.color+'18';context.fill();
-    context.beginPath();context.arc(p.x,p.y,p.r,0,2*Math.PI);context.fillStyle=p.note.color;context.shadowColor=p.note.color;context.shadowBlur=14;context.fill();context.shadowBlur=0;}
+  for(const p of m.screenNodes){
+    const color=/^#[0-9a-fA-F]{6}$/.test(p.note.color)?p.note.color:'#ae63ef';
+    context.beginPath();context.arc(p.x,p.y,p.r*2.4,0,2*Math.PI);context.fillStyle=color+'17';context.fill();
+    context.beginPath();context.arc(p.x,p.y,p.r*1.6,0,2*Math.PI);context.fillStyle=color+'35';context.fill();
+    context.beginPath();context.arc(p.x,p.y,p.r,0,2*Math.PI);context.fillStyle=color;context.shadowColor=color;context.shadowBlur=12;context.fill();context.shadowBlur=0;
+    context.beginPath();context.arc(p.x-p.r*.3,p.y-p.r*.33,Math.max(1.5,p.r*.23),0,2*Math.PI);context.fillStyle='#f7dcff';context.fill();
+    if(m.points.length<=30||m.zoom>1.2){
+      context.fillStyle='#e6d0f9';context.font='11px -apple-system, sans-serif';
+      context.textAlign='center';context.fillText(p.note.title.slice(0,18),Math.max(28,Math.min(w-28,p.x)),p.y-p.r-10);
+    }
+  }
+  if(m.linkCursor&&m.pressed?.node){
+    const from=m.screenNodes.find(p=>p.note.id===m.pressed.node.note.id);
+    if(from){
+      context.beginPath();context.moveTo(from.x,from.y);context.lineTo(m.linkCursor.x,m.linkCursor.y);
+      context.strokeStyle='#d8a7ff';context.lineWidth=2.7;context.stroke();
+    }
+    if(m.linkHover){
+      context.beginPath();context.arc(m.linkHover.x,m.linkHover.y,Math.max(19,m.linkHover.r+8),0,Math.PI*2);
+      context.strokeStyle='#a3ffbc';context.lineWidth=3;context.stroke();
+    }
+  }
   if(!m.points.length){context.fillStyle='#c4a7d8';context.textAlign='center';context.font='14px -apple-system, sans-serif';context.fillText('Create notes to grow your graph',w/2,h/2);}
 }
 
@@ -345,8 +493,8 @@ root.addEventListener('input',event=>{
     state.search=target.value;
     document.getElementById('note-list').innerHTML=noteCards(listNotes().filter(n=>`${n.title} ${n.markdown}`.toLowerCase().includes(state.search.toLowerCase())));
   }
-  if(target.id==='note-title'){state.draftTitle=target.value;state.dirty=true;}
-  if(target.id==='note-text'){state.draftMarkdown=target.value;state.dirty=true;sizeTextArea(target);}
+  if(target.id==='note-title'){state.draftTitle=target.value;state.dirty=true;state.editorSeq++;scheduleEncryptedAutosave();}
+  if(target.id==='note-text'){state.draftMarkdown=target.value;state.dirty=true;state.editorSeq++;sizeTextArea(target);scheduleEncryptedAutosave();}
   if(target.id==='dot-color'){document.getElementById('color-hex').textContent=target.value.toUpperCase();}
 });
 root.addEventListener('change',async event=>{
@@ -396,7 +544,7 @@ window.addEventListener('resize',syncEditorKeyboardSpace,{passive:true});
 
 // Never display a decrypted vault while the web app is backgrounded.
 document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){if(vault.unlocked){state.awayAt=Date.now();root.classList.add('hidden');}}
+  if(document.hidden){if(vault.unlocked){if(state.dirty)saveDraft(true).catch(()=>{});state.awayAt=Date.now();root.classList.add('hidden');}}
   else if(state.awayAt!==null){
     if(Date.now()-state.awayAt>=300000){vault.lock();clearSensitiveDraft();welcome();toast('Session expired. Unlock your private vault.');}
     else if(vault.unlocked){render();}

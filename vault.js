@@ -107,6 +107,15 @@ export function checkNotes(notes) {
        !/^#[0-9a-fA-F]{6}$/.test(note.color) || typeof note.trashed !== 'boolean' || ids.has(note.id)) {
       throw new Error('Invalid note data or size.');
     }
+    if(note.revisions!==undefined){
+      if(!Array.isArray(note.revisions)||note.revisions.length>12)throw new Error('Invalid revision history.');
+      for(const r of note.revisions){
+        if(!r||!titleOk(r.title)||typeof r.markdown!=='string'||
+          encoder.encode(r.markdown).length>LIMIT_NOTE_BYTES||
+          !/^#[0-9a-fA-F]{6}$/.test(r.color)||!Number.isFinite(r.updated))
+          throw new Error('Invalid encrypted revision.');
+      }
+    }
     ids.add(note.id);
   }
 }
