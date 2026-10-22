@@ -75,7 +75,7 @@ function editor(){
     <div class="modebar"><span>${state.reading?'READING MODE':'WRITE YOUR STORY'}</span>
       <button class="btn tiny" data-act="toggle-read">${state.reading?'✎ Edit':'◉ Read'}</button></div>
     ${state.reading?'':`<div class="toolbar" aria-label="Formatting tools">
-      ${[['h1','H1'],['h2','H2'],['bold','Bold'],['italic','Italic'],['list','• List'],['task','☐ Task'],['link','[[ Link'],['code','Code']].map(([name,label])=>`<button class="btn tiny" data-act="fmt" data-fmt="${name}">${label}</button>`).join('')}</div>
+      ${[['h1','H1'],['h2','H2'],['bold','Bold'],['italic','Italic'],['list','• List'],['task','☐ Task'],['link','[[ Link'],['code','Code']].map(([name,label])=>`<button class="btn tiny" data-act="fmt" data-fmt="${name}">${label}</button>`).join('')}</div>`}
     <input id="note-title" class="field edit-title" maxlength="150" value="${e(state.draftTitle)}" placeholder="Name your note" ${state.reading?'hidden':''}>
     <div class="doc-scroll" id="doc-scroll"><div class="doc">${state.reading?'<article id="reader" class="reader"></article>':`<textarea id="note-text" spellcheck="true" placeholder="Start writing…\n\nUse [[Another Note]] to create connections."></textarea>`}</div></div>
     <div class="editorfoot"><span>◇ ENCRYPTED · SWIPE TO SCROLL</span><span class="actions">
