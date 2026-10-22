@@ -1,0 +1,28 @@
+name: Verify Safari trial code
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check browser script syntax
+        run: |
+          set -euo pipefail
+          node --input-type=module --check < app.js
+          node --input-type=module --check < vault.js
+          node --check sw.js
+      - name: Confirm offline app shell and privacy markers
+        run: |
+          set -euo pipefail
+          test -s index.html
+          test -s manifest.webmanifest
+          test -s icon.png
+          grep -q 'app.js?v=3' index.html
+          grep -q 'connect-src' index.html
+          grep -q 'eosphorus-labyrinth-trial-v3' sw.js
