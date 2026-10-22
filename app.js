@@ -71,7 +71,7 @@ function noteCards(notes){
 function editor(){
   const shown=state.draftTitle.trim()||'Untitled note';
   return `<div class="editorbar"><div class="title-wrap"><div class="eyebrow">Private document</div><h1>${e(shown)}</h1><small>MARKDOWN  /  ${vault.demo?'TEMPORARY DEMO':e(vault.username)}</small></div>
-    <button class="btn primary tiny" data-act="save">Save</button></div>
+    <button class="btn tiny keyboard-done" type="button" data-act="keyboard-done" aria-label="Close keyboard">Done</button><button class="btn primary tiny" data-act="save">Save</button></div>
     <div class="modebar"><span>${state.reading?'READING MODE':'WRITE YOUR STORY'}</span>
       <button class="btn tiny" data-act="toggle-read">${state.reading?'✎ Edit':'◉ Read'}</button></div>
     ${state.reading?'':`<div class="toolbar" aria-label="Formatting tools">
@@ -202,6 +202,7 @@ async function perform(action,el){
       state.reading=!state.reading;render();break;
     }
     case 'save':await saveDraft();render();break;
+    case 'keyboard-done':document.activeElement?.blur();syncEditorKeyboardSpace();break;
     case 'fmt':formatText(el.dataset.fmt);break;
     case 'jump-top':document.getElementById('doc-scroll')?.scrollTo({top:0,behavior:'smooth'});break;
     case 'jump-end':{const scroll=document.getElementById('doc-scroll');if(scroll)scroll.scrollTo({top:scroll.scrollHeight,behavior:'smooth'});break;}
