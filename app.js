@@ -360,6 +360,39 @@ root.addEventListener('change',async event=>{
     const note=noteBy(target.value);if(note){document.getElementById('dot-color').value=note.color;document.getElementById('color-hex').textContent=note.color.toUpperCase();}
   }
 });
+// Keep the note editing surface visible when mobile keyboards reduce the visual viewport.
+function syncEditorKeyboardSpace(){
+  const active=document.activeElement;
+  const editable=active && (active.id==='note-text'||active.id==='note-title');
+  const workspace=root.querySelector('.workspace');
+  if(!workspace)return;
+  workspace.classList.toggle('keyboard-editing',Boolean(editable));
+  workspace.classList.toggle('note-body-focused',Boolean(editable&&active.id==='note-text'));
+  if(editable){
+    const vv=window.visualViewport;
+    const available=vv?vv.height:window.innerHeight;
+    if(Number.isFinite(available)&&available>140){
+      workspace.style.setProperty('--labyrinth-edit-height',Math.floor(available)+'px');
+    }
+  }else workspace.style.removeProperty('--labyrinth-edit-height');
+}
+root.addEventListener('focusin',event=>{
+  if(event.target?.id==='note-title'||event.target?.id==='note-text'){
+    syncEditorKeyboardSpace();
+    setTimeout(syncEditorKeyboardSpace,80);
+    setTimeout(syncEditorKeyboardSpace,350);
+  }
+});
+root.addEventListener('focusout',event=>{
+  if(event.target?.id==='note-title'||event.target?.id==='note-text'){
+    setTimeout(syncEditorKeyboardSpace,120);
+  }
+});
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize',syncEditorKeyboardSpace,{passive:true});
+}
+window.addEventListener('resize',syncEditorKeyboardSpace,{passive:true});
+
 // Never display a decrypted vault while the web app is backgrounded.
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){if(vault.unlocked){state.awayAt=Date.now();root.classList.add('hidden');}}
