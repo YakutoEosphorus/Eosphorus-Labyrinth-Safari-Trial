@@ -23,6 +23,6 @@ jobs:
           test -s index.html
           test -s manifest.webmanifest
           test -s icon.png
-          grep -q 'app.js?v=3' index.html
+          grep -q 'app.js?v=4' index.html
           grep -q 'connect-src' index.html
-          grep -q 'eosphorus-labyrinth-trial-v3' sw.js
+          grep -q 'eosphorus-labyrinth-trial-v4' sw.js
